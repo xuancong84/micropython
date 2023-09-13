@@ -3,6 +3,42 @@ import network
 from flashbdev import bdev
 
 
+def fwupdate(fn, erase_all=False, safe_check=True, verbose=True):
+    import esp
+
+    fw_size = rem_fs = os.stat(fn)[6]
+    esp.set_dfu(0, fw_size)
+    with open(fn, "rb") as fp:
+        while fp.read(4096):
+            pass
+
+    if safe_check:
+        blks = esp.get_blks()
+        if blks is None:
+            raise Exception(f"No blocks data found for the file {fn}")
+        blks, offs = blks
+        esp.set_dfu(-1, fw_size)
+        if verbose:
+            print(f"Verifying sector data:{blks} {offs}")
+        with open(fn, "rb") as fp:
+            for ii, blkid in enumerate(blks):
+                sz = min(rem_fs, 4096 - offs[ii])
+                L2 = esp.flash_read(esp.flash_user_start() + blkid * 4096 + offs[ii], sz)
+                L1 = fp.read(sz)
+                if L1 != L2:
+                    raise Exception("Data is different at N={ii} blkid={blkid}")
+                del L1, L2
+                rem_fs -= sz
+                if verbose:
+                    print(f"{ii}/{len(blks)}", end="\r")
+        esp.set_dfu(len(blks), fw_size)
+        del blks, offs
+        if verbose:
+            print("Success, starting firmware update ...")
+
+    esp.DFU(erase_all)
+
+
 def wifi():
     import binascii
 

@@ -339,6 +339,146 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_2(esp_set_native_code_location_obj, esp_set_nativ
 
 #endif
 
+/*
+#include <stdarg.h>
+int mp_vprintf(const mp_print_t *print, const char *fmt, va_list args);
+STATIC void _strncat(char *data, const char *str, size_t len){
+    int len_data = strlen(data);
+    memcpy(&data[len_data], str, len);
+    data[len_data+len] = 0;
+}
+
+STATIC int _sprintf(char *_buf, const char *fmt, ...) {
+    mp_print_t buf = {(void*)_buf, _strncat};
+    va_list ap;
+    va_start(ap, fmt);
+    int ret = mp_vprintf(&buf, fmt, ap);
+    va_end(ap);
+    return ret;
+}
+
+STATIC void showMemory(char *ptr, size_t size){
+    char buf[16];
+    for(int x=0; x<size;){
+        buf[0] = 0;
+        _sprintf(&buf[0], "%02x ", ptr[x++]);
+        if(x%32==0)_sprintf(&buf[0], "\r\n");
+        else if(x%16==0)_sprintf(&buf[0], "  ");
+        else if(x%8==0)_sprintf(&buf[0], " ");
+        mp_hal_stdout_tx_str(&buf[0]);
+        ets_loop_iter();
+    }
+    mp_hal_stdout_tx_str("\r\n");
+}
+STATIC mp_obj_t esp_showMemory(mp_obj_t _start, mp_obj_t _size) {
+    showMemory((char*)mp_obj_get_int(_start), mp_obj_get_int(_size));
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_2(esp_showMemory_obj, esp_showMemory);
+*/
+#ifdef MICROPY_DFU
+uint16_t dfu_blks[256];
+uint16_t dfu_offs[256];
+int dfu_nblks = -1;
+uint32_t dfu_fwsize = 0;
+
+/* Firmware update codes must be put into IRAM, or will crash while flashing halfway! */
+void MP_FASTCODE(erase_sector)(int sector) {
+    char *ptr = FLASH_START + sector * FLASH_SEC_SIZE;
+    for (char *PTR = ptr + FLASH_SEC_SIZE; ptr < PTR; ptr++) {
+        if (*ptr != 0xff) {
+            SPIEraseSector(sector);
+            break;
+        }
+    }
+}
+void MP_FASTCODE(DFU)(char *dfu_buf, int n_fwblks, int n_erase) {
+    for (int x = 0; x < n_fwblks; x++) {
+        erase_sector(x);
+        // uart_tx_one_char(0, 'E');
+    }
+
+    int cur_write_pos = 0;
+    int cur_write_sz;
+    int remaining_sz = dfu_fwsize;
+
+    for (int x = 0; x < dfu_nblks && remaining_sz > 0; x++) {
+        cur_write_sz = FLASH_SEC_SIZE - dfu_offs[x];
+        if (remaining_sz < cur_write_sz) {
+            cur_write_sz = remaining_sz;
+        }
+
+        Cache_Read_Disable_2();
+        SPIRead(1048576 + FLASH_SEC_SIZE * dfu_blks[x] + dfu_offs[x], (uint32_t *)dfu_buf, cur_write_sz);
+        Cache_Read_Enable_2();
+        // uart_tx_one_char(0, 'R');
+        if (x == 0) {
+            dfu_buf[3] = 64;
+        }
+        SPIWrite(cur_write_pos, (uint32_t *)dfu_buf, cur_write_sz);
+        // uart_tx_one_char(0, 'W');
+
+        cur_write_pos += cur_write_sz;
+        remaining_sz -= cur_write_sz;
+        wdt_feed();
+    }
+
+    for (int x = n_fwblks; x < n_erase; x++) {
+        erase_sector(x);
+        // uart_tx_one_char(0, 'E');
+    }
+
+    asm ("memw");
+    asm ("isync");
+    // rom_phy_reset_req();
+    system_restart_core();
+    // return cur_write_pos;
+}
+STATIC mp_obj_t esp_DFU(mp_obj_t erase_all) {
+    extern char flashchip;
+    SpiFlashChip *flash = (SpiFlashChip *)(&flashchip + 4);
+    char *buf = malloc(FLASH_SEC_SIZE);
+    if (buf == NULL) {
+        mp_raise_OSError(MP_ENOMEM);
+        return mp_const_none;
+    }
+
+    ets_wdt_disable();
+    disable_irq();
+    DFU(buf, dfu_fwsize / FLASH_SEC_SIZE + (dfu_fwsize % FLASH_SEC_SIZE?1:0), mp_obj_is_true(erase_all)?(flash->chip_size / FLASH_SEC_SIZE):0);
+
+    // It will NEVER reach here even if flash failed
+    // enable_irq(state);
+    // ets_wdt_enable();
+
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(esp_DFU_obj, esp_DFU);
+
+STATIC mp_obj_t esp_set_dfu(mp_obj_t counter, mp_obj_t fsize) {
+    dfu_nblks = mp_obj_get_int(counter);
+    dfu_fwsize = mp_obj_get_int(fsize);
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_2(esp_set_dfu_obj, esp_set_dfu);
+
+STATIC mp_obj_t esp_get_blks() {
+    if (dfu_nblks <= 0)
+        return mp_const_none;
+    mp_obj_t ret1 = mp_obj_new_list(0, NULL);
+    mp_obj_t ret2 = mp_obj_new_list(0, NULL);
+    for (int x = 0; x < dfu_nblks; x++) {
+        mp_obj_list_append(ret1, mp_obj_new_int(dfu_blks[x]));
+        mp_obj_list_append(ret2, mp_obj_new_int(dfu_offs[x]));
+    }
+    mp_obj_t ret = mp_obj_new_list(0, NULL);
+    mp_obj_list_append(ret, ret1);
+    mp_obj_list_append(ret, ret2);
+    return ret;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(esp_get_blks_obj, esp_get_blks);
+#endif
+
 STATIC const mp_rom_map_elem_t esp_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_esp) },
 
@@ -351,6 +491,14 @@ STATIC const mp_rom_map_elem_t esp_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_flash_erase), MP_ROM_PTR(&esp_flash_erase_obj) },
     { MP_ROM_QSTR(MP_QSTR_flash_size), MP_ROM_PTR(&esp_flash_size_obj) },
     { MP_ROM_QSTR(MP_QSTR_flash_user_start), MP_ROM_PTR(&esp_flash_user_start_obj) },
+
+    #ifdef MICROPY_DFU
+    { MP_ROM_QSTR(MP_QSTR_DFU), MP_ROM_PTR(&esp_DFU_obj) },
+    // { MP_ROM_QSTR(MP_QSTR_showMemory), MP_ROM_PTR(&esp_showMemory_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_dfu), MP_ROM_PTR(&esp_set_dfu_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_blks), MP_ROM_PTR(&esp_get_blks_obj) },
+    #endif
+
     #if MICROPY_ESP8266_APA102
     { MP_ROM_QSTR(MP_QSTR_apa102_write), MP_ROM_PTR(&esp_apa102_write_obj) },
     #endif
