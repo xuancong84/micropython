@@ -14,6 +14,7 @@
 #define MICROPY_VFS                     (1)
 
 #define MICROPY_PY_CRYPTOLIB            (1)
+#define MICROPY_DFU                     (1)
 
 #elif defined(MICROPY_ESP8266_1M)
 
