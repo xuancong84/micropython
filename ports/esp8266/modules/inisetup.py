@@ -13,7 +13,10 @@ def fwupdate(fn, erase_all=False, safe_check=True, verbose=True):
             pass
 
     if safe_check:
-        blks, offs = esp.get_blks()
+        blks = esp.get_blks()
+        if blks is None:
+            raise Exception(f"No blocks data found for the file {fn}")
+        blks, offs = blks
         esp.set_dfu(-1, fw_size)
         if verbose:
             print(f"Verifying sector data:{blks} {offs}")
