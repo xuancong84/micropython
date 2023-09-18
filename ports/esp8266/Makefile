@@ -83,6 +83,10 @@ CFLAGS += -DMICROPY_ESPNOW=1
 LIBS += -lespnow
 endif
 
+ifeq ($(MICROPY_DFU),1)
+CFLAGS += -DMICROPY_DFU
+endif
+
 LIBGCC_FILE_NAME = $(shell $(CC) $(CFLAGS) -print-libgcc-file-name)
 LIBS += -L$(dir $(LIBGCC_FILE_NAME)) -lgcc
 

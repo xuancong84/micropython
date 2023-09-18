@@ -48,6 +48,17 @@ STATIC mp_uint_t mp_reader_mem_readbyte(void *data) {
     }
 }
 
+STATIC byte* mp_reader_rom_readbytes(void *data, int n_bytes) {
+    mp_reader_mem_t *reader = (mp_reader_mem_t *)data;
+    if (reader->cur < reader->end) {
+        byte *ret = reader->cur;
+        reader->cur += n_bytes;
+        return ret;
+    } else {
+        return MP_READER_EOF;
+    }
+}
+
 STATIC void mp_reader_mem_close(void *data) {
     mp_reader_mem_t *reader = (mp_reader_mem_t *)data;
     if (reader->free_len > 0) {
@@ -65,6 +76,12 @@ void mp_reader_new_mem(mp_reader_t *reader, const byte *buf, size_t len, size_t 
     reader->data = rm;
     reader->readbyte = mp_reader_mem_readbyte;
     reader->close = mp_reader_mem_close;
+    reader->readbytes = NULL;
+    #ifdef MICROPY_ESP8266_2M
+    extern uint32_t dynamic_frozen_start;
+    if(dynamic_frozen_start && buf>=dynamic_frozen_start && buf<0x40300000)
+        reader->readbytes = mp_reader_rom_readbytes;
+    #endif
 }
 
 #if MICROPY_READER_POSIX
@@ -130,6 +147,7 @@ void mp_reader_new_file_from_fd(mp_reader_t *reader, int fd, bool close_fd) {
     reader->data = rp;
     reader->readbyte = mp_reader_posix_readbyte;
     reader->close = mp_reader_posix_close;
+    reader->readbytes = NULL;
 }
 
 #if !MICROPY_VFS_POSIX

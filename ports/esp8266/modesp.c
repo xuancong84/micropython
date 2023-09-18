@@ -340,7 +340,7 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_2(esp_set_native_code_location_obj, esp_set_nativ
 
 #endif
 
-/*
+
 #include <stdarg.h>
 int mp_vprintf(const mp_print_t *print, const char *fmt, va_list args);
 STATIC void _strncat(char *data, const char *str, size_t len){
@@ -376,7 +376,7 @@ STATIC mp_obj_t esp_showMemory(mp_obj_t _start, mp_obj_t _size) {
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_2(esp_showMemory_obj, esp_showMemory);
-*/
+
 #ifdef MICROPY_DFU
 uint16_t dfu_blks[256];
 uint16_t dfu_offs[256];
@@ -552,10 +552,13 @@ STATIC mp_obj_t esp_ls_frozen() {
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(esp_ls_frozen_obj, esp_ls_frozen);
 
 bool has_enough_free_sect(uint8_t *ptr, int n_needed){
-    for(int x=0; ptr<FLASH_END && x<=n_needed && (*ptr==0 || *ptr==0xff); x++)
+    int x=0;
+    for(; ptr<FLASH_END && x<=n_needed && (*ptr==0 || *ptr==0xff); x++)
+        ptr+=FLASH_SEC_SIZE;
     return x>=n_needed;
 }
 mp_obj_t flash_mpy_to_sector(const char *filename, uint8_t *ptr, uint32_t filesize, int tot_secs){
+    mp_hal_stdout_tx_str("DEBUG::flash_mpy_to_sector()\r\n");
     mp_obj_t res = mp_const_true;
     byte buf[256] = {tot_secs, tot_secs, strlen(filename), 0};
     mp_reader_t reader;
@@ -623,7 +626,6 @@ STATIC mp_obj_t esp_add_frozen(size_t n_args, const mp_obj_t *args) {
             return mp_const_false;
     }
 
-re:
     ptr = FLASH_START+dynamic_frozen_start;
     while(ptr<FLASH_END){
         switch (*ptr){
@@ -682,7 +684,7 @@ STATIC const mp_rom_map_elem_t esp_module_globals_table[] = {
 
     #ifdef MICROPY_DFU
     { MP_ROM_QSTR(MP_QSTR_DFU), MP_ROM_PTR(&esp_DFU_obj) },
-    // { MP_ROM_QSTR(MP_QSTR_showMemory), MP_ROM_PTR(&esp_showMemory_obj) },
+    { MP_ROM_QSTR(MP_QSTR_showMemory), MP_ROM_PTR(&esp_showMemory_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_dfu), MP_ROM_PTR(&esp_set_dfu_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_blks), MP_ROM_PTR(&esp_get_blks_obj) },
     #endif
