@@ -163,9 +163,9 @@ STATIC qstr load_qstr(mp_reader_t *reader) {
     }
     len >>= 1;
     qstr qst;
-    if(reader->readbytes)
+    if(reader->readbytes){
         qst = qstr_from_strn(reader->readbytes(reader->data, len+1), len);
-    else{
+    }else{
         char *str = m_new(char, len);
         read_bytes(reader, (byte *)str, len);
         read_byte(reader); // read and discard null terminator
@@ -204,7 +204,7 @@ STATIC mp_obj_t load_obj(mp_reader_t *reader) {
         }
         vstr_t vstr;
         if(reader->readbytes){
-            vstr_init_fixed_buf(&vstr, 0, reader->readbytes(reader->data, len));
+            vstr_init_fixed_buf(&vstr, len+1, reader->readbytes(reader->data, len));
             vstr.len = len;
         } else {
             vstr_init_len(&vstr, len);

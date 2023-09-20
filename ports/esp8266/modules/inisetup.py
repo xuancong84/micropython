@@ -40,11 +40,10 @@ def fwupdate(fn, erase_all=False, safe_check=True, verbose=True):
 
 
 def wifi():
-    import binascii
-
     ap_if = network.WLAN(network.AP_IF)
-    ssid = b"MicroPython-%s" % binascii.hexlify(ap_if.config("mac")[-3:])
-    ap_if.config(ssid=ssid, security=network.AUTH_WPA_WPA2_PSK, key=b"micropythoN")
+    ap_if.active(True)
+    # ssid = 'MicroPython-' + ap_if.config("mac")[-3:].hex()
+    # ap_if.config(ssid=ssid, security=network.AUTH_WPA_WPA2_PSK, key=b"micropythoN")
 
 
 def check_bootsec():

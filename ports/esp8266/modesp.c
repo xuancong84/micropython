@@ -498,32 +498,32 @@ Sector format for dynamic frozen modules: {
     char module_name[?];
     char frozen_content[?];
 }*/
-uint8_t* scan_dynamic_frozen(mp_obj_t *out_frozen_list, const char *name){
+uint8_t* scan_dynamic_frozen(mp_obj_t out_frozen_list, const char *name){
     if(!dynamic_frozen_start)
         dynamic_frozen_start = (*(uint32_t *)(0x40208ffc)+FLASH_SEC_SIZE-1)/FLASH_SEC_SIZE*FLASH_SEC_SIZE;
     int n_modules = 0;
     uint8_t *ptr = FLASH_START+dynamic_frozen_start;
     while(ptr < FLASH_END){
         if(*ptr==0xff) break;   // end-of-dynamic_frozen: erased sector are filled by with 0xff in NOR flash
-        if(ptr+FLASH_SEC_SIZE*ptr[1] > FLASH_END) goto err; // corrupted frozen sector
+        if(ptr+FLASH_SEC_SIZE*ptr[1] > FLASH_END) break; // corrupted frozen sector
         if(*ptr==0){            // deleted frozen sector has 1st byte == 0 => skip
             ptr += FLASH_SEC_SIZE;
             continue;
         }
-        if(*ptr != ptr[1]) goto err;    // valid frozen sector must have byte1 == byte2 == #-of-sectors, or corrupted
+        if(*ptr != ptr[1]) break;    // valid frozen sector must have byte1 == byte2 == #-of-sectors, or corrupted
+        if(ptr[8+ptr[2]]) break;     // not end-of-string NULL for module name => corrupted
+        if(strlen(ptr+8)!=ptr[2]) break;  // incorrect module name string length
         uint32_t mpy_size = *(uint32_t*)&ptr[4];
-        if(ptr+8+ptr[1]+mpy_size > FLASH_END) goto err;    // module size overshoot => corrupted
-        if(ptr[8+ptr[2]]) goto err;     // not end-of-string NULL for module name => corrupted
-        if(strlen(ptr+8)!=ptr[2]) goto err;  // incorrect module name string length
-        if(out_frozen_list)
-            mp_obj_list_append(*out_frozen_list, mp_obj_new_str(ptr+8, ptr[2]));
-        if(name && !strcmp(ptr+8, name)) break; // found match
+        if(ptr+9+ptr[2]+mpy_size >= FLASH_END) break;    // module size overshoot => corrupted
         n_modules ++;
+
+        // handle output
+        if(out_frozen_list!=NULL)
+            mp_obj_list_append(out_frozen_list, mp_obj_new_str(ptr+8, ptr[2]));
+        if(name && !strcmp(ptr+8, name)) break; // found match
+        ptr += FLASH_SEC_SIZE*ptr[0];
     }
     mp_find_dynamic_frozen = n_modules?mp_find_dynamic_frozen_:NULL;
-    return ptr;
-err:
-    mp_find_dynamic_frozen = NULL;
     return ptr;
 }
 
@@ -534,11 +534,14 @@ mp_import_stat_t mp_find_dynamic_frozen_(const char *str, int *frozen_type, void
     if(frozen_type)
         *frozen_type = MP_FROZEN_MPY;
     if(data){
-        mp_compiled_module_t context;
-        mp_raw_code_load_mem(&ptr[strlen(str)+9], *(uint32_t*)&ptr[4], &context);
+        mp_module_context_t *ctx = m_new_obj(mp_module_context_t);
+        ctx->module.globals = mp_globals_get();
+        mp_compiled_module_t cm;
+        cm.context = ctx;
+        mp_raw_code_load_mem(&ptr[strlen(str)+9], *(uint32_t*)&ptr[4], &cm);
         mp_frozen_module_t *fc = malloc(sizeof(mp_frozen_module_t));
-        *(mp_module_constants_t*)&fc->constants = context.context->constants;
-        fc->rc = context.rc;
+        *(mp_module_constants_t*)&fc->constants = cm.context->constants;
+        fc->rc = cm.rc;
         *data = fc;
     }
     return MP_IMPORT_STAT_FILE;
@@ -546,7 +549,7 @@ mp_import_stat_t mp_find_dynamic_frozen_(const char *str, int *frozen_type, void
 
 STATIC mp_obj_t esp_ls_frozen() {
     mp_obj_t frozen_list = mp_obj_new_list(0, NULL);
-    scan_dynamic_frozen(&frozen_list, NULL);
+    scan_dynamic_frozen(frozen_list, NULL);
     return frozen_list;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(esp_ls_frozen_obj, esp_ls_frozen);
@@ -557,16 +560,15 @@ bool has_enough_free_sect(uint8_t *ptr, int n_needed){
         ptr+=FLASH_SEC_SIZE;
     return x>=n_needed;
 }
-mp_obj_t flash_mpy_to_sector(const char *filename, uint8_t *ptr, uint32_t filesize, int tot_secs){
-    mp_hal_stdout_tx_str("DEBUG::flash_mpy_to_sector()\r\n");
+mp_obj_t flash_mpy_to_rom(const char *filename, const char *modname, uint8_t *ptr, uint32_t filesize, int tot_secs){
     mp_obj_t res = mp_const_true;
-    byte buf[256] = {tot_secs, tot_secs, strlen(filename), 0};
+    byte buf[256] = {tot_secs, tot_secs, strlen(modname), 0};
     mp_reader_t reader;
     mp_reader_new_file(&reader, filename);
     *(uint32_t*)&buf[4] = filesize;
-    strcpy(&buf[8], filename);
+    strcpy(&buf[8], modname);
     mp_uint_t ch = 0;
-    int off = strlen(filename)+9;
+    int off = strlen(modname)+9;
     while(ch!=MP_READER_EOF){
         while(off<256 && (ch=reader.readbyte(reader.data))!=MP_READER_EOF){
             buf[off] = ch;
@@ -582,7 +584,15 @@ mp_obj_t flash_mpy_to_sector(const char *filename, uint8_t *ptr, uint32_t filesi
         off = 0;
     }
     reader.close(reader.data);
+    scan_dynamic_frozen(NULL, NULL);
     return res;
+}
+bool delete_mpy_from_rom(byte *ptr){
+    uint32_t new_dword = (*(uint32_t*)ptr)&0xffffff00;  // set 1st byte to 0
+    for(int x=ptr[1]; x>0 && ptr<FLASH_END; x--,ptr+=FLASH_SEC_SIZE)    // free every sector occupied by the module
+        if(spi_flash_write(ptr-FLASH_START, (uint32_t *)&new_dword, 4)!=SPI_FLASH_RESULT_OK)   // NOR flash can write 0-bit without erasing
+            return mp_const_false;
+    return mp_const_true;
 }
 bool compare_flash_to_file(const char *filename, byte *ptr){
     bool is_diff = false;
@@ -611,18 +621,17 @@ STATIC mp_obj_t esp_add_frozen(size_t n_args, const mp_obj_t *args) {
     reader.close(reader.data);
     
     // compute spaces needed
-    int tot_size = mpy_size+strlen(filename)+9;
+    int tot_size = mpy_size+strlen(modname)+9;
     int tot_secs = (tot_size+FLASH_SEC_SIZE-1)/FLASH_SEC_SIZE;
 
     // find existing mpy
-    ptr = scan_dynamic_frozen(NULL, filename);
-    if(ptr<FLASH_END && *ptr!=0 && *ptr!=0xff && !strcmp(filename, ptr+8)){   // found module with the same name
+    ptr = scan_dynamic_frozen(NULL, modname);
+    if(ptr<FLASH_END && *ptr!=0xff && ptr[0]==ptr[1] && !strcmp(modname, ptr+8)){   // found module with the same name
         // if same module name and content, return true
-        if(*(uint32_t*)&ptr[4]==mpy_size && !compare_flash_to_file(filename, ptr+strlen(filename)+9))
+        if(*(uint32_t*)&ptr[4]==mpy_size && !compare_flash_to_file(filename, ptr+strlen(modname)+9))
             return mp_const_true;
         // otherwise, delete the existing module
-        uint32_t header1 = (*(uint32_t*)ptr) & 0xffffff00;
-        if(spi_flash_write(ptr-FLASH_START, &header1, 4)!=SPI_FLASH_RESULT_OK)
+        if(!delete_mpy_from_rom(ptr))
             return mp_const_false;
     }
 
@@ -632,11 +641,11 @@ STATIC mp_obj_t esp_add_frozen(size_t n_args, const mp_obj_t *args) {
             case 0x0:
                 if(!has_enough_free_sect(ptr, tot_secs))
                     break;
-                return flash_mpy_to_sector(filename, ptr, mpy_size, tot_secs);
+                return flash_mpy_to_rom(filename, modname, ptr, mpy_size, tot_secs);
             case 0xff:
                 if(!has_enough_free_sect(ptr, tot_secs))
                     return mp_const_false;
-                return flash_mpy_to_sector(filename, ptr, mpy_size, tot_secs);
+                return flash_mpy_to_rom(filename, modname, ptr, mpy_size, tot_secs);
             default:
                 if(ptr[1]!=ptr[0])
                     return mp_const_false;
@@ -654,16 +663,15 @@ STATIC mp_obj_t esp_del_frozen(mp_obj_t module_name) {
     uint8_t* ptr = scan_dynamic_frozen(NULL, _module_name);
     if(ptr>=FLASH_END || strcmp(ptr+8, _module_name))   // not found
         return mp_const_false;
-    uint32_t new_dword = (*(uint32_t*)ptr)&0xffffff00;  // set 1st byte to 0
-    for(int x=0, X=ptr[1]; x<X; x++)    // free every sector occupied by the module
-        if(spi_flash_write(ptr-FLASH_START, (uint32_t *)&new_dword, 4)!=SPI_FLASH_RESULT_OK)   // NOR flash can write 0-bit without erasing
-            return mp_const_false;
+    if(!delete_mpy_from_rom(ptr))
+        return mp_const_false;
+    scan_dynamic_frozen(NULL, NULL);
     return mp_const_true;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_2(esp_del_frozen_obj, esp_del_frozen);
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(esp_del_frozen_obj, esp_del_frozen);
 
 STATIC mp_obj_t esp_reset_frozen() {
-    for(int p=dynamic_frozen_start/FLASH_SEC_SIZE, P=FLASH_END/FLASH_SEC_SIZE; p<P; p++)
+    for(int p=dynamic_frozen_start/FLASH_SEC_SIZE, P=(FLASH_END-FLASH_START)/FLASH_SEC_SIZE; p<P; p++)
         erase_sector(p);
     return mp_const_true;
 }
