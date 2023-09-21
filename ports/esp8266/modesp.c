@@ -349,27 +349,14 @@ STATIC void _strncat(char *data, const char *str, size_t len){
     data[len_data+len] = 0;
 }
 
-STATIC int _sprintf(char *_buf, const char *fmt, ...) {
-    mp_print_t buf = {(void*)_buf, _strncat};
-    va_list ap;
-    va_start(ap, fmt);
-    int ret = mp_vprintf(&buf, fmt, ap);
-    va_end(ap);
-    return ret;
-}
-
-STATIC void showMemory(char *ptr, size_t size){
-    char buf[16];
+STATIC void showMemory(char *ptr, int size){
     for(int x=0; x<size;){
-        buf[0] = 0;
-        _sprintf(&buf[0], "%02x ", ptr[x++]);
-        if(x%32==0)_sprintf(&buf[0], "\r\n");
-        else if(x%16==0)_sprintf(&buf[0], "  ");
-        else if(x%8==0)_sprintf(&buf[0], " ");
-        mp_hal_stdout_tx_str(&buf[0]);
-        ets_loop_iter();
+        printf("%02x ", ptr[x++]);
+        if(x%32==0)printf("\r\n");
+        else if(x%16==0)printf("  ");
+        else if(x%8==0)printf(" ");
     }
-    mp_hal_stdout_tx_str("\r\n");
+    printf("\r\n");
 }
 STATIC mp_obj_t esp_showMemory(mp_obj_t _start, mp_obj_t _size) {
     showMemory((char*)mp_obj_get_int(_start), mp_obj_get_int(_size));
@@ -378,10 +365,10 @@ STATIC mp_obj_t esp_showMemory(mp_obj_t _start, mp_obj_t _size) {
 STATIC MP_DEFINE_CONST_FUN_OBJ_2(esp_showMemory_obj, esp_showMemory);
 
 #ifdef MICROPY_DFU
-uint16_t dfu_blks[256];
-uint16_t dfu_offs[256];
 int dfu_nblks = -1;
 uint32_t dfu_fwsize = 0;
+uint16_t *dfu_blks = NULL;
+uint16_t *dfu_offs = NULL;
 
 /* Firmware update codes must be put into IRAM, or will crash while flashing halfway! */
 void MP_FASTCODE(erase_sector)(int sector) {
@@ -456,28 +443,37 @@ STATIC mp_obj_t esp_DFU(mp_obj_t erase_all) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(esp_DFU_obj, esp_DFU);
 
-STATIC mp_obj_t esp_set_dfu(mp_obj_t counter, mp_obj_t fsize) {
-    dfu_nblks = mp_obj_get_int(counter);
+STATIC mp_obj_t esp_set_dfu(mp_obj_t nblks, mp_obj_t fsize) {
+    dfu_nblks = mp_obj_get_int(nblks);
     dfu_fwsize = mp_obj_get_int(fsize);
-    return mp_const_none;
+    if(dfu_nblks>0 && dfu_blks==NULL && dfu_offs==NULL){
+        size_t res = 0;
+        mp_obj_t ret = mp_obj_new_bytes(FLASH_START, dfu_nblks*sizeof(uint16_t)*2);
+        dfu_blks = mp_obj_str_get_data(ret, &res);
+        dfu_offs = &dfu_blks[dfu_nblks];
+        return ret; // must return an object to keep the buffer, or will be GC collected
+    }
+    return (dfu_blks!=NULL && dfu_offs!=NULL)?mp_const_true:mp_const_false;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_2(esp_set_dfu_obj, esp_set_dfu);
 
-STATIC mp_obj_t esp_get_blks() {
+STATIC mp_obj_t esp_get_blks(mp_obj_t return_details) {
+    if(!mp_obj_is_true(return_details))
+        return mp_obj_new_int(dfu_nblks);
     if (dfu_nblks <= 0)
         return mp_const_none;
-    mp_obj_t ret1 = mp_obj_new_list(0, NULL);
-    mp_obj_t ret2 = mp_obj_new_list(0, NULL);
+    mp_obj_t *secs = m_new(mp_obj_t, dfu_nblks);
+    mp_obj_t *offs = m_new(mp_obj_t, dfu_nblks);
     for (int x = 0; x < dfu_nblks; x++) {
-        mp_obj_list_append(ret1, mp_obj_new_int(dfu_blks[x]));
-        mp_obj_list_append(ret2, mp_obj_new_int(dfu_offs[x]));
+        secs[x] = mp_obj_new_int(dfu_blks[x]);
+        offs[x] = mp_obj_new_int(dfu_offs[x]);
     }
-    mp_obj_t ret = mp_obj_new_list(0, NULL);
-    mp_obj_list_append(ret, ret1);
-    mp_obj_list_append(ret, ret2);
-    return ret;
+    mp_obj_t *ret2 = m_new(mp_obj_t, 2);
+    ret2[0] = mp_obj_new_list(dfu_nblks, secs);
+    ret2[1] = mp_obj_new_list(dfu_nblks, offs);
+    return mp_obj_new_list(2, ret2);
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_0(esp_get_blks_obj, esp_get_blks);
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(esp_get_blks_obj, esp_get_blks);
 #endif
 
 // Dynamic Frozen Modules (DFM)
@@ -518,8 +514,10 @@ uint8_t* scan_dynamic_frozen(mp_obj_t out_frozen_list, const char *name){
         n_modules ++;
 
         // handle output
-        if(out_frozen_list!=NULL)
-            mp_obj_list_append(out_frozen_list, mp_obj_new_str(ptr+8, ptr[2]));
+        if(out_frozen_list!=NULL){
+            mp_obj_t dfm_info[3] = {mp_obj_new_str(ptr+8, ptr[2]), mp_obj_new_int(mpy_size), mp_obj_new_int(ptr-FLASH_START)};
+            mp_obj_list_append(out_frozen_list, mp_obj_new_tuple(3, &dfm_info[0]));
+        }
         if(name && !strcmp(ptr+8, name)) break; // found match
         ptr += FLASH_SEC_SIZE*ptr[0];
     }
@@ -584,7 +582,7 @@ mp_obj_t flash_mpy_to_rom(const char *filename, const char *modname, uint8_t *pt
         off = 0;
     }
     reader.close(reader.data);
-    scan_dynamic_frozen(NULL, NULL);
+    mp_find_dynamic_frozen = res?mp_find_dynamic_frozen_:NULL;
     return res;
 }
 bool delete_mpy_from_rom(byte *ptr){
@@ -673,6 +671,7 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_1(esp_del_frozen_obj, esp_del_frozen);
 STATIC mp_obj_t esp_reset_frozen() {
     for(int p=dynamic_frozen_start/FLASH_SEC_SIZE, P=(FLASH_END-FLASH_START)/FLASH_SEC_SIZE; p<P; p++)
         erase_sector(p);
+    mp_find_dynamic_frozen = NULL;
     return mp_const_true;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(esp_reset_frozen_obj, esp_reset_frozen);

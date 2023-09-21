@@ -46,7 +46,6 @@
 #endif
 
 #if MICROPY_ENABLE_EXTERNAL_IMPORT
-
 // Must be a string of one byte.
 #define PATH_SEP_CHAR "/"
 

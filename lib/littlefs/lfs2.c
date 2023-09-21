@@ -3244,8 +3244,8 @@ static int lfs2_file_rawsync(lfs2_t *lfs2, lfs2_file_t *file) {
 #endif
 
 #ifdef MICROPY_DFU
-extern uint16_t dfu_blks[256];
-extern uint16_t dfu_offs[256];
+extern uint16_t *dfu_blks;
+extern uint16_t *dfu_offs;
 extern int dfu_nblks;
 #endif
 static lfs2_ssize_t lfs2_file_flushedread(lfs2_t *lfs2, lfs2_file_t *file,
@@ -3270,9 +3270,16 @@ static lfs2_ssize_t lfs2_file_flushedread(lfs2_t *lfs2, lfs2_file_t *file,
                     file->ctz.head, file->ctz.size,
                     file->pos, &file->block, &file->off);
                 #ifdef MICROPY_DFU
-                if (dfu_nblks == 0 || (dfu_nblks > 0 && dfu_blks[(dfu_nblks - 1) % 256] != file->block)) { // DFU hook
-                    dfu_blks[dfu_nblks % 256] = file->block;
-                    dfu_offs[(dfu_nblks++) % 256] = file->off;
+                if (dfu_nblks >= 0){    // DFU hook
+                    if(dfu_blks!=NULL && dfu_offs!=NULL){
+                        if(dfu_nblks==0 || dfu_blks[dfu_nblks-1] != file->block) {
+                            dfu_blks[dfu_nblks] = (uint16_t)file->block;
+                            dfu_offs[dfu_nblks] = (uint16_t)file->off;
+                            dfu_nblks++;
+                        }
+                    }else{
+                        dfu_nblks++;
+                    }
                 }
                 #endif
                 if (err) {
